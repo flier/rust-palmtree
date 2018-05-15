@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::cmp;
 use std::fmt::Debug;
 use std::rc::Rc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Barrier};
 use std::thread::{Builder as ThreadBuilder, JoinHandle};
 
-use errors::Result;
+use errors::{PalmTreeError::*, Result};
 use node::{self, Node};
 use task::{TaskBatch, TreeOp};
 use worker::Worker;
@@ -36,6 +36,7 @@ struct Inner<K, V> {
     batch_size_per_worker: usize,
     senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
     workers: Vec<JoinHandle<Result<()>>>,
+    terminated: Arc<AtomicBool>,
 }
 
 impl<K, V> PalmTree<K, V>
@@ -58,6 +59,23 @@ where
             .map(|(_, receiver)| receiver)
             .collect::<Vec<_>>();
         let barrier = Arc::new(Barrier::new(num_workers));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let workers = receivers
+            .into_iter()
+            .enumerate()
+            .map(|(worker_id, receiver)| {
+                let terminated = terminated.clone();
+                let senders = senders.clone();
+                let barrier = barrier.clone();
+
+                ThreadBuilder::new()
+                    .name(format!("palmtree-worker-{}", worker_id))
+                    .spawn(move || {
+                        Worker::new(worker_id, terminated, receiver, senders, barrier).run()
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
 
         PalmTree {
             inner: Rc::new(Inner {
@@ -70,20 +88,9 @@ where
                 )),
                 num_workers,
                 batch_size_per_worker: DEFAULT_BATCH_SIZE_PER_WORKER,
-                senders: senders.clone(),
-                workers: receivers
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(worker_id, receiver)| {
-                        let senders = senders.clone();
-                        let barrier = barrier.clone();
-
-                        ThreadBuilder::new()
-                            .name(format!("palmtree-worker-{}", worker_id))
-                            .spawn(move || Worker::new(worker_id, receiver, senders, barrier).run())
-                            .unwrap()
-                    })
-                    .collect::<Vec<_>>(),
+                senders,
+                workers,
+                terminated,
             }),
         }
     }
@@ -92,6 +99,18 @@ where
 impl<K, V> PalmTree<K, V> {
     pub fn batch_size(&self) -> usize {
         self.inner.batch_size_per_worker * self.inner.num_workers
+    }
+
+    pub fn stop(self) -> Result<()> {
+        let inner = Rc::try_unwrap(self.inner).map_err(|inner| UnwrapRC(Rc::strong_count(&inner)))?;
+
+        inner.terminated.store(true, Ordering::Relaxed);
+
+        for (worker_id, worker) in inner.workers.into_iter().enumerate() {
+            worker.join().map_err(|_| StopWorker(worker_id))?;
+        }
+
+        Ok(())
     }
 }
 

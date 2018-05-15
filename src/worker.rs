@@ -13,7 +13,7 @@ const MASTER_WORKER_ID: usize = 0;
 
 pub struct Worker<K, V> {
     id: usize,
-    terminated: AtomicBool,
+    terminated: Arc<AtomicBool>,
     receiver: Receiver<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
     senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
     barrier: Arc<Barrier>,
@@ -22,13 +22,14 @@ pub struct Worker<K, V> {
 impl<K, V> Worker<K, V> {
     pub fn new(
         id: usize,
+        terminated: Arc<AtomicBool>,
         receiver: Receiver<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
         senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
         barrier: Arc<Barrier>,
     ) -> Self {
         Worker {
             id,
-            terminated: AtomicBool::new(false),
+            terminated,
             receiver,
             senders,
             barrier,
@@ -43,12 +44,14 @@ impl<K, V> Worker<K, V> {
         self.id == MASTER_WORKER_ID
     }
 
-    fn sync(&self) {
+    fn sync(&self) -> bool {
         let start_time = PreciseTime::now();
 
-        self.barrier.wait();
+        let result = self.barrier.wait();
 
-        trace!("worker sync in {}", start_time.to(PreciseTime::now()))
+        trace!("worker sync in {}", start_time.to(PreciseTime::now()));
+
+        result.is_leader()
     }
 }
 
@@ -66,10 +69,6 @@ where
             debug!("worker-{} STAGE 0: collect tasks", self.id);
 
             let (tree_root, current_tasks) = self.collect_task()?;
-
-            if current_tasks.is_empty() {
-                continue;
-            }
 
             self.sync();
 
@@ -93,7 +92,12 @@ where
         let current_tasks = if task_batch.is_empty() || !self.is_master() {
             task_batch
         } else {
-            let tasks_per_worker = task_batch.len() / self.senders.len();
+            let num_workers = self.senders.len();
+
+            debug_assert!(!self.senders.is_empty());
+            debug_assert!(task_batch.len() >= num_workers);
+
+            let tasks_per_worker = (task_batch.len() + num_workers - 1) / num_workers;
             let mut current_tasks = None;
 
             for ((worker_id, tasks_batch_for_worker), sender) in task_batch
