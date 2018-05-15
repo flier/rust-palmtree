@@ -12,3 +12,5 @@ mod node;
 mod task;
 mod tree;
 mod worker;
+
+pub use tree::PalmTree;

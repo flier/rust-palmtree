@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -25,19 +26,19 @@ pub trait Node: Debug {
 }
 
 #[derive(Debug)]
-pub struct BaseNode<K> {
+pub struct Base<K> {
     id: usize,
     level: usize,
     lower_bound: K,
     parent: Option<Arc<Box<Node>>>,
 }
 
-impl<K> BaseNode<K>
+impl<K> Base<K>
 where
     K: Default,
 {
     fn new(parent: Option<Arc<Box<Node>>>, level: usize) -> Self {
-        BaseNode {
+        Base {
             id: next_node_id(),
             level,
             lower_bound: Default::default(),
@@ -47,38 +48,52 @@ where
 }
 
 #[derive(Debug)]
-pub struct InnerNode<K> {
-    base: BaseNode<K>,
+pub struct Inner<K> {
+    base: Base<K>,
     // Keys for values
     keys: Vec<K>,
     // Pointers for child nodes
     values: Vec<Arc<Box<Node>>>,
 }
 
-unsafe impl<K> Send for InnerNode<K> {}
-unsafe impl<K> Sync for InnerNode<K> {}
+unsafe impl<K> Send for Inner<K> {}
+unsafe impl<K> Sync for Inner<K> {}
 
-impl<K> InnerNode<K>
+impl<K> Deref for Inner<K> {
+    type Target = Base<K>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl<K> DerefMut for Inner<K> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.base
+    }
+}
+
+impl<K> Inner<K>
 where
     K: Default,
 {
-    pub fn new(parent: Option<Arc<Box<Node>>>, level: usize) -> InnerNode<K> {
-        InnerNode {
-            base: BaseNode::new(parent, level),
-            keys: Vec::with_capacity(LEAF_MAX_SLOT),
-            values: Vec::with_capacity(LEAF_MAX_SLOT),
+    pub fn new(parent: Option<Arc<Box<Node>>>, level: usize) -> Self {
+        Inner {
+            base: Base::new(parent, level),
+            keys: Vec::with_capacity(INNER_MAX_SLOT),
+            values: Vec::with_capacity(INNER_MAX_SLOT),
         }
     }
 }
 
-pub fn inner<K>(parent: Option<Arc<Box<Node>>>, level: usize) -> Arc<Box<Node>>
+pub fn inner<K>(parent: Option<Arc<Box<Node>>>, level: usize) -> Arc<Box<Node + Send + Sync>>
 where
-    K: 'static + Default + Debug,
+    K: 'static + Debug + Default,
 {
-    Arc::new(Box::new(InnerNode::<K>::new(parent, level)))
+    Arc::new(Box::new(Inner::<K>::new(parent, level)))
 }
 
-impl<K> Node for InnerNode<K>
+impl<K> Node for Inner<K>
 where
     K: Debug,
 {
@@ -88,26 +103,53 @@ where
 }
 
 #[derive(Debug)]
-pub struct LeafNode<K, V> {
-    base: BaseNode<K>,
+pub struct Leaf<K, V> {
+    base: Base<K>,
     // Keys for leaf node
     keys: Vec<K>,
     // Values for leaf node
     values: Vec<V>,
 }
 
-pub fn leaf<K, V>(parent: Option<Arc<Box<Node>>>, level: usize) -> LeafNode<K, V>
-where
-    K: Default,
-{
-    LeafNode {
-        base: BaseNode::new(parent, level),
-        keys: Vec::with_capacity(LEAF_MAX_SLOT),
-        values: Vec::with_capacity(LEAF_MAX_SLOT),
+unsafe impl<K, V> Send for Leaf<K, V> {}
+unsafe impl<K, V> Sync for Leaf<K, V> {}
+
+impl<K, V> Deref for Leaf<K, V> {
+    type Target = Base<K>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
     }
 }
 
-impl<K, V> Node for LeafNode<K, V>
+impl<K, V> DerefMut for Leaf<K, V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.base
+    }
+}
+
+impl<K, V> Leaf<K, V>
+where
+    K: Default,
+{
+    pub fn new(parent: Option<Arc<Box<Node>>>, level: usize) -> Self {
+        Leaf {
+            base: Base::new(parent, level),
+            keys: Vec::with_capacity(LEAF_MAX_SLOT),
+            values: Vec::with_capacity(LEAF_MAX_SLOT),
+        }
+    }
+}
+
+pub fn leaf<K, V>(parent: Option<Arc<Box<Node>>>, level: usize) -> Arc<Box<Node + Send + Sync>>
+where
+    K: 'static + Debug + Default,
+    V: 'static + Debug,
+{
+    Arc::new(Box::new(Leaf::<K, V>::new(parent, level)))
+}
+
+impl<K, V> Node for Leaf<K, V>
 where
     K: Debug,
     V: Debug,

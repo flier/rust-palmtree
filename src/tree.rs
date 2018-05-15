@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::cmp;
 use std::fmt::Debug;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Barrier, RwLock};
+use std::sync::{Arc, Barrier};
 use std::thread::{Builder as ThreadBuilder, JoinHandle};
 
 use errors::Result;
@@ -15,21 +15,13 @@ use worker::Worker;
 const DEFAULT_BATCH_SIZE_PER_WORKER: usize = 4096;
 
 #[derive(Clone)]
-pub struct PalmTree<K, V>
-where
-    K: Send + Sync,
-    V: Send + Sync,
-{
+pub struct PalmTree<K, V> {
     inner: Rc<Inner<K, V>>,
 }
 
-struct Inner<K, V>
-where
-    K: Send + Sync,
-    V: Send + Sync,
-{
+struct Inner<K, V> {
     // Root of the palm tree
-    tree_root: Arc<Box<Node>>,
+    tree_root: Arc<Box<Node + Send + Sync>>,
     // Height of the tree
     tree_depth: usize,
     // Number of nodes on each layer
@@ -42,7 +34,7 @@ where
     num_workers: usize,
     /// Number of working threads
     batch_size_per_worker: usize,
-    senders: Vec<Sender<TaskBatch<K, V>>>,
+    senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
     workers: Vec<JoinHandle<Result<()>>>,
 }
 
@@ -53,8 +45,10 @@ where
 {
     pub fn new(min_key: K, num_workers: usize) -> Self {
         let num_workers = cmp::max(num_workers, 1);
-        let channels: Vec<(Sender<TaskBatch<K, V>>, Receiver<TaskBatch<K, V>>)> =
-            (0..num_workers).map(|_| channel()).collect();
+        let channels: Vec<(
+            Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
+            Receiver<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
+        )> = (0..num_workers).map(|_| channel()).collect();
         let senders = channels
             .iter()
             .map(|(sender, _)| sender.clone())
@@ -95,15 +89,17 @@ where
     }
 }
 
+impl<K, V> PalmTree<K, V> {
+    pub fn batch_size(&self) -> usize {
+        self.inner.batch_size_per_worker * self.inner.num_workers
+    }
+}
+
 impl<K, V> PalmTree<K, V>
 where
     K: 'static + Send + Sync,
     V: 'static + Send + Sync,
 {
-    fn batch_size(&self) -> usize {
-        self.inner.batch_size_per_worker * self.inner.num_workers
-    }
-
     /// Find the value for a key
     pub fn find(&self, key: K) -> Result<()> {
         self.push_task(TreeOp::Find(key))
@@ -129,7 +125,11 @@ where
             let task_batch = self.inner
                 .tree_current_batch
                 .replace(TaskBatch::with_capacity(self.batch_size()));
-            self.inner.senders.first().unwrap().send(task_batch)?;
+            self.inner
+                .senders
+                .first()
+                .unwrap()
+                .send((self.inner.tree_root.clone(), task_batch))?;
         }
 
         Ok(())

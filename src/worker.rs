@@ -6,31 +6,24 @@ use itertools::Itertools;
 use time::PreciseTime;
 
 use errors::Result;
+use node::Node;
 use task::TaskBatch;
 
 const MASTER_WORKER_ID: usize = 0;
 
-pub struct Worker<K, V>
-where
-    K: Send + Sync,
-    V: Send + Sync,
-{
+pub struct Worker<K, V> {
     id: usize,
     terminated: AtomicBool,
-    receiver: Receiver<TaskBatch<K, V>>,
-    senders: Vec<Sender<TaskBatch<K, V>>>,
+    receiver: Receiver<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
+    senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
     barrier: Arc<Barrier>,
 }
 
-impl<K, V> Worker<K, V>
-where
-    K: 'static + Send + Sync,
-    V: 'static + Send + Sync,
-{
+impl<K, V> Worker<K, V> {
     pub fn new(
         id: usize,
-        receiver: Receiver<TaskBatch<K, V>>,
-        senders: Vec<Sender<TaskBatch<K, V>>>,
+        receiver: Receiver<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
+        senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
         barrier: Arc<Barrier>,
     ) -> Self {
         Worker {
@@ -50,19 +43,31 @@ where
         self.id == MASTER_WORKER_ID
     }
 
+    fn sync(&self) {
+        let start_time = PreciseTime::now();
+
+        self.barrier.wait();
+
+        trace!("worker sync in {}", start_time.to(PreciseTime::now()))
+    }
+}
+
+impl<K, V> Worker<K, V>
+where
+    K: 'static + Send + Sync,
+    V: 'static + Send + Sync,
+{
     pub fn run(&self) -> Result<()> {
         debug!("worker-{} enter", self.id);
 
         while !self.is_terminated() {
             let start_time = PreciseTime::now();
 
-            // Stage 0, collect work batch and partition
-
             debug!("worker-{} STAGE 0: collect tasks", self.id);
 
-            let task_batch = self.collect_task()?;
+            let (tree_root, current_tasks) = self.collect_task()?;
 
-            if task_batch.is_empty() {
+            if current_tasks.is_empty() {
                 continue;
             }
 
@@ -71,9 +76,11 @@ where
             debug!(
                 "worker-{} STAGE 0: recieved {} tasks in {}",
                 self.id,
-                task_batch.len(),
+                current_tasks.len(),
                 start_time.to(PreciseTime::now())
             );
+
+            debug!("worker-{} STAGE 1: search for leaves", self.id);
         }
 
         debug!("worker-{} terminated", self.id);
@@ -81,22 +88,13 @@ where
         Ok(())
     }
 
-    fn sync(&self) {
-        let start_time = PreciseTime::now();
-
-        self.barrier.wait();
-
-        trace!("worker sync in {}", start_time.to(PreciseTime::now()))
-    }
-
-    fn collect_task(&self) -> Result<TaskBatch<K, V>> {
-        let task_batch = self.receiver.recv()?;
-
-        if task_batch.is_empty() || !self.is_master() {
-            Ok(task_batch)
+    fn collect_task(&self) -> Result<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)> {
+        let (tree_root, task_batch) = self.receiver.recv()?;
+        let current_tasks = if task_batch.is_empty() || !self.is_master() {
+            task_batch
         } else {
             let tasks_per_worker = task_batch.len() / self.senders.len();
-            let mut my_task_batch = None;
+            let mut current_tasks = None;
 
             for ((worker_id, tasks_batch_for_worker), sender) in task_batch
                 .into_inner()
@@ -108,13 +106,15 @@ where
                 .zip(self.senders.iter())
             {
                 if worker_id == MASTER_WORKER_ID {
-                    my_task_batch = Some(tasks_batch_for_worker);
+                    current_tasks = Some(tasks_batch_for_worker);
                 } else {
-                    sender.send(tasks_batch_for_worker)?;
+                    sender.send((tree_root.clone(), tasks_batch_for_worker))?;
                 }
             }
 
-            Ok(my_task_batch.unwrap())
-        }
+            current_tasks.unwrap()
+        };
+
+        Ok((tree_root, current_tasks))
     }
 }
