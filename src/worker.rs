@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,12 +29,6 @@ pub struct Inner<K, V> {
     receiver: TaskReceiver<K, V>,
     senders: Vec<TaskSender<K, V>>,
     barrier: Arc<Barrier>,
-    state: State<K, V>,
-}
-
-enum State<K, V> {
-    Collect,
-    Search(TreeTasks<K, V>),
 }
 
 impl<K, V> Deref for Worker<K, V> {
@@ -59,10 +54,14 @@ impl<K, V> Worker<K, V> {
                 receiver,
                 senders,
                 barrier,
-                state: State::Collect,
             }),
         }
     }
+}
+
+enum State<K, V> {
+    Collect,
+    Search(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>),
 }
 
 impl<K, V> Worker<K, V>
@@ -70,26 +69,13 @@ where
     K: 'static + Send + Sync,
     V: 'static + Send + Sync,
 {
-    pub fn run(&self) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
+        let mut state = State::Collect;
+
         debug!("worker-{} enter", self.id);
 
         while !self.is_terminated() {
-            let start_time = PreciseTime::now();
-
-            debug!("worker-{} STAGE 0: collect tasks", self.id);
-
-            let (tree_root, current_tasks) = self.collect_task()?;
-
-            self.sync();
-
-            debug!(
-                "worker-{} STAGE 0: recieved {} tasks in {}",
-                self.id,
-                current_tasks.len(),
-                start_time.to(PreciseTime::now())
-            );
-
-            debug!("worker-{} STAGE 1: search for leaves", self.id);
+            state = self.next_state(state)?;
         }
 
         debug!("worker-{} terminated", self.id);
@@ -123,6 +109,34 @@ where
     K: 'static + Send + Sync,
     V: 'static + Send + Sync,
 {
+    fn next_state(&self, state: State<K, V>) -> Result<State<K, V>> {
+        let start_time = PreciseTime::now();
+
+        match state {
+            State::Collect => {
+                debug!("worker-{} STAGE 0: collect tasks", self.id);
+
+                let (tree_root, current_tasks) = self.collect_task()?;
+
+                self.sync();
+
+                debug!(
+                    "worker-{} STAGE 0: recieved {} tasks in {}",
+                    self.id,
+                    current_tasks.len(),
+                    start_time.to(PreciseTime::now())
+                );
+
+                Ok(State::Search(tree_root, current_tasks))
+            }
+            State::Search(tree_root, current_tasks) => {
+                debug!("worker-{} STAGE 1: search for leaves", self.id);
+
+                Ok(State::Collect)
+            }
+        }
+    }
+
     fn collect_task(&self) -> Result<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)> {
         let (tree_root, task_batch) = self.receiver.recv()?;
         let current_tasks = if task_batch.is_empty() || !self.is_master() {
