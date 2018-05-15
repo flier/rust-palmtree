@@ -3,60 +3,20 @@ use std::sync::Arc;
 
 use node::Node;
 
-/// Tree operation types
-enum TreeOpType {
-    Find,
-    Insert,
-    Remove,
-}
-
-pub struct TreeOp<K, V>
+/// Tree operation type
+pub enum TreeOp<K, V>
 where
     K: Send + Sync,
     V: Send + Sync,
 {
-    op: TreeOpType,
-    key: K,
-    value: Option<V>,
-    result: Option<Option<V>>,
-}
-
-impl<K, V> TreeOp<K, V>
-where
-    K: Send + Sync,
-    V: Send + Sync,
-{
-    pub fn insert(key: K, value: V) -> Self {
-        TreeOp {
-            op: TreeOpType::Insert,
-            key,
-            value: Some(value),
-            result: None,
-        }
-    }
-
-    pub fn find(key: K) -> Self {
-        TreeOp {
-            op: TreeOpType::Find,
-            key,
-            value: None,
-            result: None,
-        }
-    }
-
-    pub fn remove(key: K) -> Self {
-        TreeOp {
-            op: TreeOpType::Remove,
-            key,
-            value: None,
-            result: None,
-        }
-    }
+    Find(K),
+    Insert(K, V),
+    Remove(K),
 }
 
 /// A batch of tree operations, this data structure is not thread safe
 /// The major goal of this class is to amortize memory allocation of tree operations
-pub struct TaskBatch<K, V>(Vec<TreeOp<K, V>>)
+pub struct TaskBatch<K, V>(Vec<Box<TreeOp<K, V>>>)
 where
     K: Send + Sync,
     V: Send + Sync;
@@ -70,12 +30,49 @@ where
         TaskBatch(Vec::with_capacity(capacity))
     }
 
+    pub fn into_inner(self) -> Vec<Box<TreeOp<K, V>>> {
+        self.0
+    }
+
     pub fn is_full(&self) -> bool {
         self.0.len() == self.0.capacity()
     }
 
     /// Add a tree operation to the batch
     pub fn add_op(&mut self, op: TreeOp<K, V>) {
-        self.0.push(op);
+        self.0.push(Box::new(op));
+    }
+}
+
+impl<I, K, V> From<I> for TaskBatch<K, V>
+where
+    I: IntoIterator<Item = Box<TreeOp<K, V>>>,
+    K: Send + Sync,
+    V: Send + Sync,
+{
+    fn from(ops: I) -> Self {
+        TaskBatch(ops.into_iter().collect())
+    }
+}
+
+impl<K, V> Deref for TaskBatch<K, V>
+where
+    K: Send + Sync,
+    V: Send + Sync,
+{
+    type Target = Vec<Box<TreeOp<K, V>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<K, V> DerefMut for TaskBatch<K, V>
+where
+    K: Send + Sync,
+    V: Send + Sync,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }

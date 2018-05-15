@@ -4,6 +4,8 @@ extern crate log;
 extern crate failure;
 #[macro_use]
 extern crate lazy_static;
+extern crate itertools;
+extern crate time;
 
 mod errors;
 mod node;
