@@ -1,3 +1,5 @@
+use std::ops::Deref;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Barrier};
@@ -11,47 +13,55 @@ use task::TaskBatch;
 
 const MASTER_WORKER_ID: usize = 0;
 
+pub type TreeTasks<K, V> = (Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>);
+pub type TaskSender<K, V> = Sender<TreeTasks<K, V>>;
+pub type TaskReceiver<K, V> = Receiver<TreeTasks<K, V>>;
+
+#[derive(Clone)]
 pub struct Worker<K, V> {
+    inner: Rc<Inner<K, V>>,
+}
+
+pub struct Inner<K, V> {
     id: usize,
     terminated: Arc<AtomicBool>,
-    receiver: Receiver<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
-    senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
+    receiver: TaskReceiver<K, V>,
+    senders: Vec<TaskSender<K, V>>,
     barrier: Arc<Barrier>,
+    state: State<K, V>,
+}
+
+enum State<K, V> {
+    Collect,
+    Search(TreeTasks<K, V>),
+}
+
+impl<K, V> Deref for Worker<K, V> {
+    type Target = Inner<K, V>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl<K, V> Worker<K, V> {
     pub fn new(
         id: usize,
         terminated: Arc<AtomicBool>,
-        receiver: Receiver<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
-        senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
+        receiver: TaskReceiver<K, V>,
+        senders: Vec<TaskSender<K, V>>,
         barrier: Arc<Barrier>,
     ) -> Self {
         Worker {
-            id,
-            terminated,
-            receiver,
-            senders,
-            barrier,
+            inner: Rc::new(Inner {
+                id,
+                terminated,
+                receiver,
+                senders,
+                barrier,
+                state: State::Collect,
+            }),
         }
-    }
-
-    pub fn is_terminated(&self) -> bool {
-        self.terminated.load(Ordering::Relaxed)
-    }
-
-    pub fn is_master(&self) -> bool {
-        self.id == MASTER_WORKER_ID
-    }
-
-    fn sync(&self) -> bool {
-        let start_time = PreciseTime::now();
-
-        let result = self.barrier.wait();
-
-        trace!("worker sync in {}", start_time.to(PreciseTime::now()));
-
-        result.is_leader()
     }
 }
 
@@ -86,7 +96,33 @@ where
 
         Ok(())
     }
+}
 
+impl<K, V> Inner<K, V> {
+    fn is_terminated(&self) -> bool {
+        self.terminated.load(Ordering::Relaxed)
+    }
+
+    fn is_master(&self) -> bool {
+        self.id == MASTER_WORKER_ID
+    }
+
+    fn sync(&self) -> bool {
+        let start_time = PreciseTime::now();
+
+        let result = self.barrier.wait();
+
+        trace!("worker sync in {}", start_time.to(PreciseTime::now()));
+
+        result.is_leader()
+    }
+}
+
+impl<K, V> Inner<K, V>
+where
+    K: 'static + Send + Sync,
+    V: 'static + Send + Sync,
+{
     fn collect_task(&self) -> Result<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)> {
         let (tree_root, task_batch) = self.receiver.recv()?;
         let current_tasks = if task_batch.is_empty() || !self.is_master() {

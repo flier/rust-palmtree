@@ -3,14 +3,14 @@ use std::cmp;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Barrier};
 use std::thread::{Builder as ThreadBuilder, JoinHandle};
 
 use errors::{PalmTreeError::*, Result};
 use node::{self, Node};
 use task::{TaskBatch, TreeOp};
-use worker::Worker;
+use worker::{TaskSender, Worker};
 
 const DEFAULT_BATCH_SIZE_PER_WORKER: usize = 4096;
 
@@ -34,7 +34,7 @@ struct Inner<K, V> {
     num_workers: usize,
     /// Number of working threads
     batch_size_per_worker: usize,
-    senders: Vec<Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>>,
+    senders: Vec<TaskSender<K, V>>,
     workers: Vec<JoinHandle<Result<()>>>,
     terminated: Arc<AtomicBool>,
 }
@@ -46,10 +46,7 @@ where
 {
     pub fn new(min_key: K, num_workers: usize) -> Self {
         let num_workers = cmp::max(num_workers, 1);
-        let channels: Vec<(
-            Sender<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
-            Receiver<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)>,
-        )> = (0..num_workers).map(|_| channel()).collect();
+        let channels = (0..num_workers).map(|_| channel()).collect::<Vec<_>>();
         let senders = channels
             .iter()
             .map(|(sender, _)| sender.clone())
@@ -107,7 +104,7 @@ impl<K, V> PalmTree<K, V> {
         inner.terminated.store(true, Ordering::Relaxed);
 
         for (worker_id, worker) in inner.workers.into_iter().enumerate() {
-            worker.join().map_err(|_| StopWorker(worker_id))?;
+            worker.join().map_err(|_| StopWorker(worker_id))??;
         }
 
         Ok(())
