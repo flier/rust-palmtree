@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::cmp;
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
@@ -41,7 +42,7 @@ struct Inner<K, V> {
 
 impl<K, V> PalmTree<K, V>
 where
-    K: 'static + Send + Sync + Default + Debug + Ord,
+    K: 'static + Send + Sync + Default + Debug + Hash + Ord,
     V: 'static + Send + Sync,
 {
     pub fn new(min_key: K, num_workers: usize) -> Self {

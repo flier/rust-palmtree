@@ -1,6 +1,9 @@
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+pub type NodeId = usize;
 
 // Max number of slots per inner node
 const INNER_MAX_SLOT: usize = 256;
@@ -9,19 +12,23 @@ const LEAF_MAX_SLOT: usize = 64;
 
 #[derive(Debug)]
 pub struct Base<K, V> {
-    id: usize,
+    id: NodeId,
     level: usize,
     lower_bound: K,
     parent: Option<Arc<Box<Node<K, V>>>>,
 }
 
 impl<K, V> Base<K, V> {
-    fn next_node_id() -> usize {
+    fn next_node_id() -> NodeId {
         lazy_static! {
             static ref NODE_NUM: AtomicUsize = AtomicUsize::new(0);
         }
 
         NODE_NUM.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub fn id(&self) -> NodeId {
+        self.id
     }
 }
 
@@ -48,6 +55,20 @@ pub enum Node<K, V> {
 unsafe impl<K, V> Send for Node<K, V> {}
 unsafe impl<K, V> Sync for Node<K, V> {}
 
+impl<K, V> Hash for Node<K, V> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state)
+    }
+}
+
+impl<K, V> PartialEq for Node<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<K, V> Eq for Node<K, V> {}
+
 #[derive(Debug)]
 pub struct Inner<K, V> {
     base: Base<K, V>,
@@ -64,9 +85,13 @@ impl<K, V> Inner<K, V>
 where
     K: Default + Ord,
 {
-    pub fn search(&self, key: &K) -> Option<Arc<Box<Node<K, V>>>> {
+    pub fn search(&self, key: &K) -> Arc<Box<Node<K, V>>> {
         match self.keys.binary_search(key) {
-            Ok(idx) | Err(idx) => self.values.get(idx).cloned(),
+            Ok(idx) | Err(idx) => self.values
+                .get(idx)
+                .or_else(|| self.values.last())
+                .cloned()
+                .unwrap(),
         }
     }
 }

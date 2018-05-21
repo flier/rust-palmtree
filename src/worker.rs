@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,13 +65,13 @@ enum State<K, V> {
     Search(Arc<Box<Node<K, V>>>, TaskBatch<K, V>),
     Update(
         Arc<Box<Node<K, V>>>,
-        Vec<(TreeOp<K, V>, Option<Arc<Box<Node<K, V>>>>)>,
+        HashMap<Arc<Box<Node<K, V>>>, Vec<TreeOp<K, V>>>,
     ),
 }
 
 impl<K, V> Worker<K, V>
 where
-    K: 'static + Send + Sync + Default + Ord,
+    K: 'static + Send + Sync + Default + Hash + Ord,
     V: 'static + Send + Sync,
 {
     pub fn run(&mut self) -> Result<()> {
@@ -109,7 +111,7 @@ impl<K, V> Inner<K, V> {
 
 impl<K, V> Inner<K, V>
 where
-    K: 'static + Send + Sync + Default + Ord,
+    K: 'static + Send + Sync + Default + Hash + Ord,
     V: 'static + Send + Sync,
 {
     fn next_state(&self, state: State<K, V>) -> Result<State<K, V>> {
@@ -133,15 +135,18 @@ where
             State::Search(tree_root, current_tasks) => {
                 debug!("worker-{} STAGE 1: search for leaves", self.id);
 
-                let searched = current_tasks
-                    .into_inner()
-                    .into_iter()
-                    .map(|op| {
+                let searched_tasks = current_tasks.into_inner().into_iter().fold(
+                    HashMap::new(),
+                    |mut tasks, op| {
                         let target_node = self.search(tree_root.clone(), op.key());
 
-                        (op, target_node)
-                    })
-                    .collect::<Vec<_>>();
+                        tasks.entry(target_node).or_insert_with(Vec::new).push(op);
+
+                        tasks
+                    },
+                );
+
+                let current_tasks = self.redistribute_leaf_tasks(searched_tasks)?;
 
                 debug!(
                     "worker-{} STAGE 1: finished in {}",
@@ -149,14 +154,30 @@ where
                     start_time.to(PreciseTime::now())
                 );
 
-                State::Update(tree_root, searched)
+                State::Update(tree_root, current_tasks)
             }
-            State::Update(tree_root, searched) => {
-                debug!(
-                    "worker-{} STAGE 2: process {} leaves",
-                    self.id,
-                    searched.len()
-                );
+            State::Update(tree_root, mut current_tasks) => {
+                debug!("worker-{} STAGE 2: process leaves", self.id);
+
+                for (target_node, tree_ops) in self.receiver.try_iter() {
+                    current_tasks
+                        .entry(target_node)
+                        .or_insert_with(Vec::new)
+                        .extend(tree_ops.into_inner());
+                }
+
+                // let mut changed = HashMap::new();
+                // let mut deleted = HashSet::new();
+
+                for (target_node, tree_ops) in current_tasks {
+                    for op in tree_ops {
+                        match op {
+                            TreeOp::Find(key) => {}
+                            TreeOp::Insert(key, value) => {}
+                            TreeOp::Remove(key) => {}
+                        }
+                    }
+                }
 
                 debug!(
                     "worker-{} STAGE 2: finished in {}",
@@ -209,15 +230,37 @@ where
     }
 
     /// Return the leaf node that contains the key
-    fn search(&self, tree_root: Arc<Box<Node<K, V>>>, key: &K) -> Option<Arc<Box<Node<K, V>>>> {
+    fn search(&self, tree_root: Arc<Box<Node<K, V>>>, key: &K) -> Arc<Box<Node<K, V>>> {
         let mut cur_node = tree_root;
 
         loop {
             if let Some(inner) = cur_node.clone().as_inner() {
-                cur_node = inner.search(key)?;
+                cur_node = inner.search(key);
             } else {
-                return Some(cur_node);
+                return cur_node;
             }
         }
+    }
+
+    fn redistribute_leaf_tasks(
+        &self,
+        tasks: HashMap<Arc<Box<Node<K, V>>>, Vec<TreeOp<K, V>>>,
+    ) -> Result<HashMap<Arc<Box<Node<K, V>>>, Vec<TreeOp<K, V>>>> {
+        let mut current_tasks = HashMap::new();
+
+        for (target_node, tree_ops) in tasks {
+            let worker_id = target_node.id() % self.senders.len();
+
+            if worker_id == self.id {
+                current_tasks.insert(target_node, tree_ops);
+            } else {
+                self.senders
+                    .get(worker_id)
+                    .unwrap()
+                    .send((target_node, TaskBatch::from(tree_ops)))?;
+            }
+        }
+
+        Ok(current_tasks)
     }
 }
