@@ -1,16 +1,68 @@
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 /// Tree operation type
 pub enum TreeOp<K, V> {
-    Find(K),
-    Insert(K, V),
-    Remove(K),
+    Find {
+        key: K,
+        result: AtomicPtr<V>,
+    },
+    Insert {
+        key: K,
+        value: V,
+        result: AtomicPtr<V>,
+    },
+    Remove {
+        key: K,
+        result: AtomicPtr<V>,
+    },
 }
 
 impl<K, V> TreeOp<K, V> {
+    pub fn find(key: K) -> Self {
+        TreeOp::Find {
+            key,
+            result: AtomicPtr::default(),
+        }
+    }
+
+    pub fn insert(key: K, value: V) -> Self {
+        TreeOp::Insert {
+            key,
+            value,
+            result: AtomicPtr::default(),
+        }
+    }
+
+    pub fn remove(key: K) -> Self {
+        TreeOp::Remove {
+            key,
+            result: AtomicPtr::default(),
+        }
+    }
+
     pub fn key(&self) -> &K {
         match *self {
-            TreeOp::Find(ref key) | TreeOp::Insert(ref key, _) | TreeOp::Remove(ref key) => key,
+            TreeOp::Find { ref key, .. }
+            | TreeOp::Insert { ref key, .. }
+            | TreeOp::Remove { ref key, .. } => key,
+        }
+    }
+
+    pub fn result(&self) -> Option<Arc<V>> {
+        match *self {
+            TreeOp::Find { ref result, .. }
+            | TreeOp::Insert { ref result, .. }
+            | TreeOp::Remove { ref result, .. } => {
+                let result = result.load(Ordering::Relaxed);
+
+                if result.is_null() {
+                    None
+                } else {
+                    Some(unsafe { Arc::from_raw(result) })
+                }
+            }
         }
     }
 }

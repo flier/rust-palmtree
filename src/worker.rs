@@ -172,9 +172,9 @@ where
                 for (target_node, tree_ops) in current_tasks {
                     for op in tree_ops {
                         match op {
-                            TreeOp::Find(key) => {}
-                            TreeOp::Insert(key, value) => {}
-                            TreeOp::Remove(key) => {}
+                            TreeOp::Find { key, .. } => {}
+                            TreeOp::Insert { key, value, .. } => {}
+                            TreeOp::Remove { key, .. } => {}
                         }
                     }
                 }

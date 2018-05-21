@@ -119,17 +119,17 @@ where
 {
     /// Find the value for a key
     pub fn find(&self, key: K) -> Result<()> {
-        self.push_task(TreeOp::Find(key))
+        self.push_task(TreeOp::find(key))
     }
 
     /// insert a k,v into the tree
     pub fn insert(&self, key: K, value: V) -> Result<()> {
-        self.push_task(TreeOp::Insert(key, value))
+        self.push_task(TreeOp::insert(key, value))
     }
 
     /// remove a k,v from the tree
     pub fn remove(&self, key: K) -> Result<()> {
-        self.push_task(TreeOp::Remove(key))
+        self.push_task(TreeOp::remove(key))
     }
 
     /// Push a task into the current batch, if the batch is full, push the batch into the batch queue.

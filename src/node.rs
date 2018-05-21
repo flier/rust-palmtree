@@ -102,7 +102,7 @@ pub struct Leaf<K, V> {
     // Keys for leaf node
     keys: Vec<K>,
     // Values for leaf node
-    values: Vec<V>,
+    values: Vec<Arc<V>>,
 }
 
 unsafe impl<K, V> Send for Leaf<K, V> {}
