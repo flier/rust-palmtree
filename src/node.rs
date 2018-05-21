@@ -108,6 +108,18 @@ pub struct Leaf<K, V> {
 unsafe impl<K, V> Send for Leaf<K, V> {}
 unsafe impl<K, V> Sync for Leaf<K, V> {}
 
+impl<K, V> Leaf<K, V>
+where
+    K: Default + Ord,
+{
+    pub fn search(&self, key: &K) -> Option<Arc<V>> {
+        self.keys
+            .binary_search(key)
+            .ok()
+            .and_then(|idx| self.values.get(idx).cloned())
+    }
+}
+
 impl<K, V> Deref for Node<K, V> {
     type Target = Base<K, V>;
 

@@ -42,7 +42,7 @@ struct Inner<K, V> {
 
 impl<K, V> PalmTree<K, V>
 where
-    K: 'static + Send + Sync + Default + Debug + Hash + Ord,
+    K: 'static + Send + Sync + Clone + Default + Debug + Hash + Ord,
     V: 'static + Send + Sync,
 {
     pub fn new(min_key: K, num_workers: usize) -> Self {

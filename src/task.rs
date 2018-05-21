@@ -2,6 +2,8 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use node::Node;
+
 /// Tree operation type
 pub enum TreeOp<K, V> {
     Find {
@@ -10,7 +12,7 @@ pub enum TreeOp<K, V> {
     },
     Insert {
         key: K,
-        value: V,
+        value: Arc<V>,
         result: AtomicPtr<V>,
     },
     Remove {
@@ -30,7 +32,7 @@ impl<K, V> TreeOp<K, V> {
     pub fn insert(key: K, value: V) -> Self {
         TreeOp::Insert {
             key,
-            value,
+            value: Arc::new(value),
             result: AtomicPtr::default(),
         }
     }
@@ -62,6 +64,16 @@ impl<K, V> TreeOp<K, V> {
                 } else {
                     Some(unsafe { Arc::from_raw(result) })
                 }
+            }
+        }
+    }
+
+    pub fn set_result(&self, value: Arc<V>) {
+        match *self {
+            TreeOp::Find { ref result, .. }
+            | TreeOp::Insert { ref result, .. }
+            | TreeOp::Remove { ref result, .. } => {
+                result.store(Arc::into_raw(value) as *mut V, Ordering::Relaxed)
             }
         }
     }
@@ -116,5 +128,36 @@ impl<K, V> Deref for TaskBatch<K, V> {
 impl<K, V> DerefMut for TaskBatch<K, V> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.ops
+    }
+}
+
+pub enum NodeMod<K, V> {
+    Add {
+        values: Vec<(K, Arc<V>)>,
+        nodes: Vec<(K, Arc<Node<K, V>>)>,
+        orphaned: Vec<(K, Arc<V>)>,
+    },
+    Remove {
+        keys: Vec<K>,
+        nodes: Vec<(K, Arc<Node<K, V>>)>,
+        orphaned: Vec<(K, Arc<V>)>,
+    },
+}
+
+impl<K, V> NodeMod<K, V> {
+    pub fn add(key: K, value: Arc<V>) -> Self {
+        NodeMod::Add {
+            values: vec![(key, value)],
+            nodes: Vec::new(),
+            orphaned: Vec::new(),
+        }
+    }
+
+    pub fn remove(key: K) -> Self {
+        NodeMod::Remove {
+            keys: vec![key],
+            nodes: Vec::new(),
+            orphaned: Vec::new(),
+        }
     }
 }

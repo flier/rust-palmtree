@@ -11,7 +11,7 @@ use time::PreciseTime;
 
 use errors::Result;
 use node::Node;
-use task::{TaskBatch, TreeOp};
+use task::{NodeMod, TaskBatch, TreeOp};
 
 const MASTER_WORKER_ID: usize = 0;
 
@@ -68,7 +68,7 @@ enum State<K, V> {
 
 impl<K, V> Worker<K, V>
 where
-    K: 'static + Send + Sync + Default + Hash + Ord,
+    K: 'static + Send + Sync + Clone + Default + Hash + Ord,
     V: 'static + Send + Sync,
 {
     pub fn run(&mut self) -> Result<()> {
@@ -108,7 +108,7 @@ impl<K, V> Inner<K, V> {
 
 impl<K, V> Inner<K, V>
 where
-    K: 'static + Send + Sync + Default + Hash + Ord,
+    K: 'static + Send + Sync + Clone + Default + Hash + Ord,
     V: 'static + Send + Sync,
 {
     fn next_state(&self, state: State<K, V>) -> Result<State<K, V>> {
@@ -163,18 +163,7 @@ where
                         .extend(tree_ops.into_inner());
                 }
 
-                // let mut changed = HashMap::new();
-                // let mut deleted = HashSet::new();
-
-                for (target_node, tree_ops) in current_tasks {
-                    for op in tree_ops {
-                        match op {
-                            TreeOp::Find { key, .. } => {}
-                            TreeOp::Insert { key, value, .. } => {}
-                            TreeOp::Remove { key, .. } => {}
-                        }
-                    }
-                }
+                let leaf_mods = self.resolve_hazards(current_tasks);
 
                 debug!(
                     "worker-{} STAGE 2: finished in {}",
@@ -259,5 +248,54 @@ where
         }
 
         Ok(current_tasks)
+    }
+
+    fn resolve_hazards(
+        &self,
+        current_tasks: HashMap<Arc<Node<K, V>>, Vec<TreeOp<K, V>>>,
+    ) -> HashMap<Arc<Node<K, V>>, Vec<NodeMod<K, V>>> {
+        let mut changed: HashMap<K, Arc<V>> = HashMap::new();
+        let mut deleted: HashSet<K> = HashSet::new();
+        let mut leaf_mods = HashMap::new();
+
+        for (target_node, tree_ops) in current_tasks.into_iter() {
+            for op in tree_ops.into_iter() {
+                match op {
+                    TreeOp::Find { key, result, .. } => {
+                        if deleted.contains(&key) {
+                            continue;
+                        }
+
+                        if let Some(value) = changed.get(&key) {
+                            result.store(Arc::into_raw(value.clone()) as *mut V, Ordering::Relaxed)
+                        } else if let Some(value) =
+                            target_node.as_leaf().and_then(|leaf| leaf.search(&key))
+                        {
+                            result.store(Arc::into_raw(value.clone()) as *mut V, Ordering::Relaxed)
+                        }
+                    }
+                    TreeOp::Insert { key, value, .. } => {
+                        deleted.remove(&key);
+                        changed.insert(key.clone(), value.clone());
+
+                        leaf_mods
+                            .entry(target_node.clone())
+                            .or_insert_with(Vec::new)
+                            .push(NodeMod::add(key, value));
+                    }
+                    TreeOp::Remove { key, .. } => {
+                        changed.remove(&key);
+                        deleted.insert(key.clone());
+
+                        leaf_mods
+                            .entry(target_node.clone())
+                            .or_insert_with(Vec::new)
+                            .push(NodeMod::remove(key));
+                    }
+                }
+            }
+        }
+
+        leaf_mods
     }
 }
