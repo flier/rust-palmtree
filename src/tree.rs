@@ -21,7 +21,7 @@ pub struct PalmTree<K, V> {
 
 struct Inner<K, V> {
     // Root of the palm tree
-    tree_root: Arc<Box<Node + Send + Sync>>,
+    tree_root: Arc<Box<Node<K> + Send + Sync>>,
     // Height of the tree
     tree_depth: usize,
     // Number of nodes on each layer
@@ -41,7 +41,7 @@ struct Inner<K, V> {
 
 impl<K, V> PalmTree<K, V>
 where
-    K: 'static + Send + Sync + Default + Debug,
+    K: 'static + Send + Sync + Default + Debug + Ord,
     V: 'static + Send + Sync,
 {
     pub fn new(min_key: K, num_workers: usize) -> Self {

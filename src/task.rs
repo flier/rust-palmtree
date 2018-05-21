@@ -7,6 +7,14 @@ pub enum TreeOp<K, V> {
     Remove(K),
 }
 
+impl<K, V> TreeOp<K, V> {
+    pub fn key(&self) -> &K {
+        match *self {
+            TreeOp::Find(ref key) | TreeOp::Insert(ref key, _) | TreeOp::Remove(ref key) => key,
+        }
+    }
+}
+
 /// A batch of tree operations, this data structure is not thread safe
 /// The major goal of this class is to amortize memory allocation of tree operations
 pub struct TaskBatch<K, V> {

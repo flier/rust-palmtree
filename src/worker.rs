@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +13,7 @@ use task::TaskBatch;
 
 const MASTER_WORKER_ID: usize = 0;
 
-pub type TreeTasks<K, V> = (Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>);
+pub type TreeTasks<K, V> = (Arc<Box<Node<K> + Send + Sync>>, TaskBatch<K, V>);
 pub type TaskSender<K, V> = Sender<TreeTasks<K, V>>;
 pub type TaskReceiver<K, V> = Receiver<TreeTasks<K, V>>;
 
@@ -61,7 +60,7 @@ impl<K, V> Worker<K, V> {
 
 enum State<K, V> {
     Collect,
-    Search(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>),
+    Search(Arc<Box<Node<K> + Send + Sync>>, TaskBatch<K, V>),
 }
 
 impl<K, V> Worker<K, V>
@@ -132,12 +131,16 @@ where
             State::Search(tree_root, current_tasks) => {
                 debug!("worker-{} STAGE 1: search for leaves", self.id);
 
+                let target_nodes = current_tasks.into_inner().into_iter().map(|task| {
+                    let target_node = self.search(tree_root.clone(), task.key());
+                });
+
                 Ok(State::Collect)
             }
         }
     }
 
-    fn collect_task(&self) -> Result<(Arc<Box<Node + Send + Sync>>, TaskBatch<K, V>)> {
+    fn collect_task(&self) -> Result<(Arc<Box<Node<K> + Send + Sync>>, TaskBatch<K, V>)> {
         let (tree_root, task_batch) = self.receiver.recv()?;
         let current_tasks = if task_batch.is_empty() || !self.is_master() {
             task_batch
@@ -170,5 +173,17 @@ where
         };
 
         Ok((tree_root, current_tasks))
+    }
+
+    fn search(
+        &self,
+        tree_root: Arc<Box<Node<K> + Send + Sync>>,
+        key: &K,
+    ) -> Option<Arc<Box<Node<K> + Send + Sync>>> {
+        let mut cur_node = tree_root;
+
+        loop {
+            let idx = cur_node.search(key)?;
+        }
     }
 }
