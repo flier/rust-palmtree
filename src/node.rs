@@ -1,4 +1,3 @@
-use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -8,45 +7,31 @@ const INNER_MAX_SLOT: usize = 256;
 // Max number of slots per leaf node
 const LEAF_MAX_SLOT: usize = 64;
 
-lazy_static! {
-    static ref NODE_NUM: AtomicUsize = Default::default();
-}
-
-fn next_node_id() -> usize {
-    NODE_NUM.fetch_add(1, Ordering::SeqCst)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NodeType {
-    Inner,
-    Leaf,
-}
-
-pub trait Node<K>: Debug {
-    fn node_type(&self) -> NodeType;
-
-    fn is_leaf(&self) -> bool {
-        self.node_type() == NodeType::Leaf
-    }
-
-    fn search(&self, key: &K) -> Option<usize>;
-}
-
 #[derive(Debug)]
-pub struct Base<K> {
+pub struct Base<K, V> {
     id: usize,
     level: usize,
     lower_bound: K,
-    parent: Option<Arc<Box<Node<K>>>>,
+    parent: Option<Arc<Box<Node<K, V>>>>,
 }
 
-impl<K> Base<K>
+impl<K, V> Base<K, V> {
+    fn next_node_id() -> usize {
+        lazy_static! {
+            static ref NODE_NUM: AtomicUsize = AtomicUsize::new(0);
+        }
+
+        NODE_NUM.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+impl<K, V> Base<K, V>
 where
     K: Default,
 {
-    fn new(parent: Option<Arc<Box<Node<K>>>>, level: usize) -> Self {
+    fn new(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Self {
         Base {
-            id: next_node_id(),
+            id: Self::next_node_id(),
             level,
             lower_bound: Default::default(),
             parent,
@@ -55,69 +40,40 @@ where
 }
 
 #[derive(Debug)]
-pub struct Inner<K> {
-    base: Base<K>,
+pub enum Node<K, V> {
+    Inner(Inner<K, V>),
+    Leaf(Leaf<K, V>),
+}
+
+unsafe impl<K, V> Send for Node<K, V> {}
+unsafe impl<K, V> Sync for Node<K, V> {}
+
+#[derive(Debug)]
+pub struct Inner<K, V> {
+    base: Base<K, V>,
     // Keys for values
     keys: Vec<K>,
     // Pointers for child nodes
-    values: Vec<Arc<Box<Node<K>>>>,
+    values: Vec<Arc<Box<Node<K, V>>>>,
 }
 
-unsafe impl<K> Send for Inner<K> {}
-unsafe impl<K> Sync for Inner<K> {}
+unsafe impl<K, V> Send for Inner<K, V> {}
+unsafe impl<K, V> Sync for Inner<K, V> {}
 
-impl<K> Deref for Inner<K> {
-    type Target = Base<K>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
-impl<K> DerefMut for Inner<K> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.base
-    }
-}
-
-impl<K> Inner<K>
+impl<K, V> Inner<K, V>
 where
     K: Default + Ord,
 {
-    pub fn new(parent: Option<Arc<Box<Node<K>>>>, level: usize) -> Self {
-        Inner {
-            base: Base::new(parent, level),
-            keys: Vec::with_capacity(INNER_MAX_SLOT),
-            values: Vec::with_capacity(INNER_MAX_SLOT),
+    pub fn search(&self, key: &K) -> Option<Arc<Box<Node<K, V>>>> {
+        match self.keys.binary_search(key) {
+            Ok(idx) | Err(idx) => self.values.get(idx).cloned(),
         }
-    }
-}
-
-pub fn inner<K>(parent: Option<Arc<Box<Node<K>>>>, level: usize) -> Arc<Box<Node<K> + Send + Sync>>
-where
-    K: 'static + Debug + Default + Ord,
-{
-    Arc::new(Box::new(Inner::<K>::new(parent, level)))
-}
-
-impl<K> Node<K> for Inner<K>
-where
-    K: Debug + Ord,
-{
-    fn node_type(&self) -> NodeType {
-        NodeType::Inner
-    }
-
-    fn search(&self, key: &K) -> Option<usize> {
-        Some(match self.keys.binary_search(key) {
-            Ok(idx) | Err(idx) => idx,
-        })
     }
 }
 
 #[derive(Debug)]
 pub struct Leaf<K, V> {
-    base: Base<K>,
+    base: Base<K, V>,
     // Keys for leaf node
     keys: Vec<K>,
     // Values for leaf node
@@ -127,54 +83,79 @@ pub struct Leaf<K, V> {
 unsafe impl<K, V> Send for Leaf<K, V> {}
 unsafe impl<K, V> Sync for Leaf<K, V> {}
 
-impl<K, V> Deref for Leaf<K, V> {
-    type Target = Base<K>;
+impl<K, V> Deref for Node<K, V> {
+    type Target = Base<K, V>;
 
     fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
-impl<K, V> DerefMut for Leaf<K, V> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.base
-    }
-}
-
-impl<K, V> Leaf<K, V>
-where
-    K: Default + Ord,
-{
-    pub fn new(parent: Option<Arc<Box<Node<K>>>>, level: usize) -> Self {
-        Leaf {
-            base: Base::new(parent, level),
-            keys: Vec::with_capacity(LEAF_MAX_SLOT),
-            values: Vec::with_capacity(LEAF_MAX_SLOT),
+        match *self {
+            Node::Inner(Inner { ref base, .. }) | Node::Leaf(Leaf { ref base, .. }) => base,
         }
     }
 }
 
-pub fn leaf<K, V>(
-    parent: Option<Arc<Box<Node<K>>>>,
-    level: usize,
-) -> Arc<Box<Node<K> + Send + Sync>>
-where
-    K: 'static + Debug + Default + Ord,
-    V: 'static + Debug,
-{
-    Arc::new(Box::new(Leaf::<K, V>::new(parent, level)))
+impl<K, V> DerefMut for Node<K, V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match *self {
+            Node::Inner(Inner { ref mut base, .. }) | Node::Leaf(Leaf { ref mut base, .. }) => base,
+        }
+    }
 }
 
-impl<K, V> Node<K> for Leaf<K, V>
+pub fn inner<K, V>(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Arc<Box<Node<K, V>>>
 where
-    K: Debug + Ord,
-    V: Debug,
+    K: Default + Ord,
 {
-    fn node_type(&self) -> NodeType {
-        NodeType::Leaf
+    Arc::new(Box::new(Node::<K, V>::inner(parent, level)))
+}
+
+pub fn leaf<K, V>(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Arc<Box<Node<K, V>>>
+where
+    K: Default + Ord,
+{
+    Arc::new(Box::new(Node::<K, V>::leaf(parent, level)))
+}
+
+impl<K, V> Node<K, V>
+where
+    K: Default,
+{
+    pub fn inner(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Self {
+        Node::Inner(Inner {
+            base: Base::new(parent, level),
+            keys: Vec::with_capacity(INNER_MAX_SLOT),
+            values: Vec::with_capacity(INNER_MAX_SLOT),
+        })
     }
 
-    fn search(&self, key: &K) -> Option<usize> {
-        self.keys.binary_search(key).ok()
+    pub fn leaf(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Self {
+        Node::Leaf(Leaf {
+            base: Base::new(parent, level),
+            keys: Vec::with_capacity(LEAF_MAX_SLOT),
+            values: Vec::with_capacity(LEAF_MAX_SLOT),
+        })
+    }
+
+    pub fn as_inner(&self) -> Option<&Inner<K, V>> {
+        match *self {
+            Node::Inner(ref inner) => Some(inner),
+            Node::Leaf(_) => None,
+        }
+    }
+
+    pub fn as_leaf(&self) -> Option<&Leaf<K, V>> {
+        match *self {
+            Node::Inner(_) => None,
+            Node::Leaf(ref leaf) => Some(leaf),
+        }
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        self.as_leaf().is_some()
+    }
+
+    pub fn keys(&self) -> &[K] {
+        match *self {
+            Node::Inner(Inner { ref keys, .. }) | Node::Leaf(Leaf { ref keys, .. }) => keys,
+        }
     }
 }

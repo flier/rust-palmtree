@@ -21,7 +21,7 @@ pub struct PalmTree<K, V> {
 
 struct Inner<K, V> {
     // Root of the palm tree
-    tree_root: Arc<Box<Node<K> + Send + Sync>>,
+    tree_root: Arc<Box<Node<K, V>>>,
     // Height of the tree
     tree_depth: usize,
     // Number of nodes on each layer
@@ -76,7 +76,7 @@ where
 
         PalmTree {
             inner: Rc::new(Inner {
-                tree_root: node::inner::<K>(None, 1),
+                tree_root: node::inner::<K, V>(None, 1),
                 tree_depth: 1,
                 layer_width: vec![AtomicUsize::new(1), AtomicUsize::new(1)],
                 min_key,

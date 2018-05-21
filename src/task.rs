@@ -18,7 +18,7 @@ impl<K, V> TreeOp<K, V> {
 /// A batch of tree operations, this data structure is not thread safe
 /// The major goal of this class is to amortize memory allocation of tree operations
 pub struct TaskBatch<K, V> {
-    ops: Vec<Box<TreeOp<K, V>>>,
+    ops: Vec<TreeOp<K, V>>,
 }
 
 impl<K, V> TaskBatch<K, V> {
@@ -28,7 +28,7 @@ impl<K, V> TaskBatch<K, V> {
         }
     }
 
-    pub fn into_inner(self) -> Vec<Box<TreeOp<K, V>>> {
+    pub fn into_inner(self) -> Vec<TreeOp<K, V>> {
         self.ops
     }
 
@@ -38,13 +38,13 @@ impl<K, V> TaskBatch<K, V> {
 
     /// Add a tree operation to the batch
     pub fn add_op(&mut self, op: TreeOp<K, V>) {
-        self.ops.push(Box::new(op));
+        self.ops.push(op);
     }
 }
 
 impl<I, K, V> From<I> for TaskBatch<K, V>
 where
-    I: IntoIterator<Item = Box<TreeOp<K, V>>>,
+    I: IntoIterator<Item = TreeOp<K, V>>,
 {
     fn from(ops: I) -> Self {
         TaskBatch {
@@ -54,7 +54,7 @@ where
 }
 
 impl<K, V> Deref for TaskBatch<K, V> {
-    type Target = Vec<Box<TreeOp<K, V>>>;
+    type Target = Vec<TreeOp<K, V>>;
 
     fn deref(&self) -> &Self::Target {
         &self.ops

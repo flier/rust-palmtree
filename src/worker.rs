@@ -9,11 +9,11 @@ use time::PreciseTime;
 
 use errors::Result;
 use node::Node;
-use task::TaskBatch;
+use task::{TaskBatch, TreeOp};
 
 const MASTER_WORKER_ID: usize = 0;
 
-pub type TreeTasks<K, V> = (Arc<Box<Node<K> + Send + Sync>>, TaskBatch<K, V>);
+pub type TreeTasks<K, V> = (Arc<Box<Node<K, V>>>, TaskBatch<K, V>);
 pub type TaskSender<K, V> = Sender<TreeTasks<K, V>>;
 pub type TaskReceiver<K, V> = Receiver<TreeTasks<K, V>>;
 
@@ -60,12 +60,16 @@ impl<K, V> Worker<K, V> {
 
 enum State<K, V> {
     Collect,
-    Search(Arc<Box<Node<K> + Send + Sync>>, TaskBatch<K, V>),
+    Search(Arc<Box<Node<K, V>>>, TaskBatch<K, V>),
+    Update(
+        Arc<Box<Node<K, V>>>,
+        Vec<(TreeOp<K, V>, Option<Arc<Box<Node<K, V>>>>)>,
+    ),
 }
 
 impl<K, V> Worker<K, V>
 where
-    K: 'static + Send + Sync,
+    K: 'static + Send + Sync + Default + Ord,
     V: 'static + Send + Sync,
 {
     pub fn run(&mut self) -> Result<()> {
@@ -105,19 +109,17 @@ impl<K, V> Inner<K, V> {
 
 impl<K, V> Inner<K, V>
 where
-    K: 'static + Send + Sync,
+    K: 'static + Send + Sync + Default + Ord,
     V: 'static + Send + Sync,
 {
     fn next_state(&self, state: State<K, V>) -> Result<State<K, V>> {
         let start_time = PreciseTime::now();
 
-        match state {
+        let next_state = match state {
             State::Collect => {
                 debug!("worker-{} STAGE 0: collect tasks", self.id);
 
                 let (tree_root, current_tasks) = self.collect_task()?;
-
-                self.sync();
 
                 debug!(
                     "worker-{} STAGE 0: recieved {} tasks in {}",
@@ -126,21 +128,52 @@ where
                     start_time.to(PreciseTime::now())
                 );
 
-                Ok(State::Search(tree_root, current_tasks))
+                State::Search(tree_root, current_tasks)
             }
             State::Search(tree_root, current_tasks) => {
                 debug!("worker-{} STAGE 1: search for leaves", self.id);
 
-                let target_nodes = current_tasks.into_inner().into_iter().map(|task| {
-                    let target_node = self.search(tree_root.clone(), task.key());
-                });
+                let searched = current_tasks
+                    .into_inner()
+                    .into_iter()
+                    .map(|op| {
+                        let target_node = self.search(tree_root.clone(), op.key());
 
-                Ok(State::Collect)
+                        (op, target_node)
+                    })
+                    .collect::<Vec<_>>();
+
+                debug!(
+                    "worker-{} STAGE 1: finished in {}",
+                    self.id,
+                    start_time.to(PreciseTime::now())
+                );
+
+                State::Update(tree_root, searched)
             }
-        }
+            State::Update(tree_root, searched) => {
+                debug!(
+                    "worker-{} STAGE 2: process {} leaves",
+                    self.id,
+                    searched.len()
+                );
+
+                debug!(
+                    "worker-{} STAGE 2: finished in {}",
+                    self.id,
+                    start_time.to(PreciseTime::now())
+                );
+
+                State::Collect
+            }
+        };
+
+        self.sync();
+
+        Ok(next_state)
     }
 
-    fn collect_task(&self) -> Result<(Arc<Box<Node<K> + Send + Sync>>, TaskBatch<K, V>)> {
+    fn collect_task(&self) -> Result<(Arc<Box<Node<K, V>>>, TaskBatch<K, V>)> {
         let (tree_root, task_batch) = self.receiver.recv()?;
         let current_tasks = if task_batch.is_empty() || !self.is_master() {
             task_batch
@@ -175,15 +208,16 @@ where
         Ok((tree_root, current_tasks))
     }
 
-    fn search(
-        &self,
-        tree_root: Arc<Box<Node<K> + Send + Sync>>,
-        key: &K,
-    ) -> Option<Arc<Box<Node<K> + Send + Sync>>> {
+    /// Return the leaf node that contains the key
+    fn search(&self, tree_root: Arc<Box<Node<K, V>>>, key: &K) -> Option<Arc<Box<Node<K, V>>>> {
         let mut cur_node = tree_root;
 
         loop {
-            let idx = cur_node.search(key)?;
+            if let Some(inner) = cur_node.clone().as_inner() {
+                cur_node = inner.search(key)?;
+            } else {
+                return Some(cur_node);
+            }
         }
     }
 }
