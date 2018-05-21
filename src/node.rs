@@ -15,7 +15,7 @@ pub struct Base<K, V> {
     id: NodeId,
     level: usize,
     lower_bound: K,
-    parent: Option<Arc<Box<Node<K, V>>>>,
+    parent: Option<Arc<Node<K, V>>>,
 }
 
 impl<K, V> Base<K, V> {
@@ -36,7 +36,7 @@ impl<K, V> Base<K, V>
 where
     K: Default,
 {
-    fn new(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Self {
+    fn new(parent: Option<Arc<Node<K, V>>>, level: usize) -> Self {
         Base {
             id: Self::next_node_id(),
             level,
@@ -75,7 +75,7 @@ pub struct Inner<K, V> {
     // Keys for values
     keys: Vec<K>,
     // Pointers for child nodes
-    values: Vec<Arc<Box<Node<K, V>>>>,
+    values: Vec<Arc<Node<K, V>>>,
 }
 
 unsafe impl<K, V> Send for Inner<K, V> {}
@@ -85,7 +85,7 @@ impl<K, V> Inner<K, V>
 where
     K: Default + Ord,
 {
-    pub fn search(&self, key: &K) -> Arc<Box<Node<K, V>>> {
+    pub fn search(&self, key: &K) -> Arc<Node<K, V>> {
         match self.keys.binary_search(key) {
             Ok(idx) | Err(idx) => self.values
                 .get(idx)
@@ -126,25 +126,25 @@ impl<K, V> DerefMut for Node<K, V> {
     }
 }
 
-pub fn inner<K, V>(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Arc<Box<Node<K, V>>>
+pub fn inner<K, V>(parent: Option<Arc<Node<K, V>>>, level: usize) -> Arc<Node<K, V>>
 where
     K: Default + Ord,
 {
-    Arc::new(Box::new(Node::<K, V>::inner(parent, level)))
+    Arc::new(Node::<K, V>::inner(parent, level))
 }
 
-pub fn leaf<K, V>(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Arc<Box<Node<K, V>>>
+pub fn leaf<K, V>(parent: Option<Arc<Node<K, V>>>, level: usize) -> Arc<Node<K, V>>
 where
     K: Default + Ord,
 {
-    Arc::new(Box::new(Node::<K, V>::leaf(parent, level)))
+    Arc::new(Node::<K, V>::leaf(parent, level))
 }
 
 impl<K, V> Node<K, V>
 where
     K: Default,
 {
-    pub fn inner(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Self {
+    pub fn inner(parent: Option<Arc<Node<K, V>>>, level: usize) -> Self {
         Node::Inner(Inner {
             base: Base::new(parent, level),
             keys: Vec::with_capacity(INNER_MAX_SLOT),
@@ -152,7 +152,7 @@ where
         })
     }
 
-    pub fn leaf(parent: Option<Arc<Box<Node<K, V>>>>, level: usize) -> Self {
+    pub fn leaf(parent: Option<Arc<Node<K, V>>>, level: usize) -> Self {
         Node::Leaf(Leaf {
             base: Base::new(parent, level),
             keys: Vec::with_capacity(LEAF_MAX_SLOT),

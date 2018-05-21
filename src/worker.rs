@@ -15,7 +15,7 @@ use task::{TaskBatch, TreeOp};
 
 const MASTER_WORKER_ID: usize = 0;
 
-pub type TreeTasks<K, V> = (Arc<Box<Node<K, V>>>, TaskBatch<K, V>);
+pub type TreeTasks<K, V> = (Arc<Node<K, V>>, TaskBatch<K, V>);
 pub type TaskSender<K, V> = Sender<TreeTasks<K, V>>;
 pub type TaskReceiver<K, V> = Receiver<TreeTasks<K, V>>;
 
@@ -62,11 +62,8 @@ impl<K, V> Worker<K, V> {
 
 enum State<K, V> {
     Collect,
-    Search(Arc<Box<Node<K, V>>>, TaskBatch<K, V>),
-    Update(
-        Arc<Box<Node<K, V>>>,
-        HashMap<Arc<Box<Node<K, V>>>, Vec<TreeOp<K, V>>>,
-    ),
+    Search(Arc<Node<K, V>>, TaskBatch<K, V>),
+    Update(Arc<Node<K, V>>, HashMap<Arc<Node<K, V>>, Vec<TreeOp<K, V>>>),
 }
 
 impl<K, V> Worker<K, V>
@@ -194,7 +191,7 @@ where
         Ok(next_state)
     }
 
-    fn collect_task(&self) -> Result<(Arc<Box<Node<K, V>>>, TaskBatch<K, V>)> {
+    fn collect_task(&self) -> Result<(Arc<Node<K, V>>, TaskBatch<K, V>)> {
         let (tree_root, task_batch) = self.receiver.recv()?;
         let current_tasks = if task_batch.is_empty() || !self.is_master() {
             task_batch
@@ -230,7 +227,7 @@ where
     }
 
     /// Return the leaf node that contains the key
-    fn search(&self, tree_root: Arc<Box<Node<K, V>>>, key: &K) -> Arc<Box<Node<K, V>>> {
+    fn search(&self, tree_root: Arc<Node<K, V>>, key: &K) -> Arc<Node<K, V>> {
         let mut cur_node = tree_root;
 
         loop {
@@ -244,8 +241,8 @@ where
 
     fn redistribute_leaf_tasks(
         &self,
-        tasks: HashMap<Arc<Box<Node<K, V>>>, Vec<TreeOp<K, V>>>,
-    ) -> Result<HashMap<Arc<Box<Node<K, V>>>, Vec<TreeOp<K, V>>>> {
+        tasks: HashMap<Arc<Node<K, V>>, Vec<TreeOp<K, V>>>,
+    ) -> Result<HashMap<Arc<Node<K, V>>, Vec<TreeOp<K, V>>>> {
         let mut current_tasks = HashMap::new();
 
         for (target_node, tree_ops) in tasks {

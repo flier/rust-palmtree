@@ -22,7 +22,7 @@ pub struct PalmTree<K, V> {
 
 struct Inner<K, V> {
     // Root of the palm tree
-    tree_root: Arc<Box<Node<K, V>>>,
+    tree_root: Arc<Node<K, V>>,
     // Height of the tree
     tree_depth: usize,
     // Number of nodes on each layer
