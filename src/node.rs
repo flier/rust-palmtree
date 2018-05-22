@@ -3,6 +3,10 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use itertools::Itertools;
+
+use task::NodeMod;
+
 pub type NodeId = usize;
 
 // Max number of slots per inner node
@@ -12,10 +16,9 @@ const LEAF_MAX_SLOT: usize = 64;
 
 #[derive(Debug)]
 pub struct Base<K, V> {
-    id: NodeId,
-    level: usize,
-    lower_bound: K,
-    parent: Option<Arc<Node<K, V>>>,
+    pub id: NodeId,
+    pub level: usize,
+    pub parent: Option<Arc<Node<K, V>>>,
 }
 
 impl<K, V> Base<K, V> {
@@ -32,15 +35,11 @@ impl<K, V> Base<K, V> {
     }
 }
 
-impl<K, V> Base<K, V>
-where
-    K: Default,
-{
-    fn new(parent: Option<Arc<Node<K, V>>>, level: usize) -> Self {
+impl<K, V> Base<K, V> {
+    pub fn new(parent: Option<Arc<Node<K, V>>>, level: usize) -> Self {
         Base {
             id: Self::next_node_id(),
             level,
-            lower_bound: Default::default(),
             parent,
         }
     }
@@ -71,11 +70,11 @@ impl<K, V> Eq for Node<K, V> {}
 
 #[derive(Debug)]
 pub struct Inner<K, V> {
-    base: Base<K, V>,
+    pub base: Base<K, V>,
     // Keys for values
-    keys: Vec<K>,
+    pub keys: Vec<K>,
     // Pointers for child nodes
-    values: Vec<Arc<Node<K, V>>>,
+    pub values: Vec<Arc<Node<K, V>>>,
 }
 
 unsafe impl<K, V> Send for Inner<K, V> {}
@@ -85,6 +84,10 @@ impl<K, V> Inner<K, V>
 where
     K: Default + Ord,
 {
+    pub fn max_slot() -> usize {
+        INNER_MAX_SLOT
+    }
+
     pub fn search(&self, key: &K) -> Arc<Node<K, V>> {
         match self.keys.binary_search(key) {
             Ok(idx) | Err(idx) => self.values
@@ -98,19 +101,25 @@ where
 
 #[derive(Debug)]
 pub struct Leaf<K, V> {
-    base: Base<K, V>,
+    pub base: Base<K, V>,
     // Keys for leaf node
-    keys: Vec<K>,
+    pub keys: Vec<K>,
     // Values for leaf node
-    values: Vec<Arc<V>>,
+    pub values: Vec<Arc<V>>,
 }
 
 unsafe impl<K, V> Send for Leaf<K, V> {}
 unsafe impl<K, V> Sync for Leaf<K, V> {}
 
+impl<K, V> Leaf<K, V> {
+    pub fn max_slot() -> usize {
+        LEAF_MAX_SLOT
+    }
+}
+
 impl<K, V> Leaf<K, V>
 where
-    K: Default + Ord,
+    K: Ord,
 {
     pub fn search(&self, key: &K) -> Option<Arc<V>> {
         self.keys
@@ -140,22 +149,19 @@ impl<K, V> DerefMut for Node<K, V> {
 
 pub fn inner<K, V>(parent: Option<Arc<Node<K, V>>>, level: usize) -> Arc<Node<K, V>>
 where
-    K: Default + Ord,
+    K: Ord,
 {
     Arc::new(Node::<K, V>::inner(parent, level))
 }
 
 pub fn leaf<K, V>(parent: Option<Arc<Node<K, V>>>, level: usize) -> Arc<Node<K, V>>
 where
-    K: Default + Ord,
+    K: Ord,
 {
     Arc::new(Node::<K, V>::leaf(parent, level))
 }
 
-impl<K, V> Node<K, V>
-where
-    K: Default,
-{
+impl<K, V> Node<K, V> {
     pub fn inner(parent: Option<Arc<Node<K, V>>>, level: usize) -> Self {
         Node::Inner(Inner {
             base: Base::new(parent, level),
@@ -170,6 +176,12 @@ where
             keys: Vec::with_capacity(LEAF_MAX_SLOT),
             values: Vec::with_capacity(LEAF_MAX_SLOT),
         })
+    }
+
+    pub fn lower_bound(&self) -> Option<&K> {
+        match *self {
+            Node::Inner(Inner { ref keys, .. }) | Node::Leaf(Leaf { ref keys, .. }) => keys.first(),
+        }
     }
 
     pub fn as_inner(&self) -> Option<&Inner<K, V>> {

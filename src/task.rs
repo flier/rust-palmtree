@@ -146,23 +146,20 @@ impl<K, V> DerefMut for TaskBatch<K, V> {
 
 pub enum NodeMod<K, V> {
     Add {
-        values: Vec<(K, Arc<V>)>,
-        nodes: Vec<(K, Arc<Node<K, V>>)>,
-        orphaned: Vec<(K, Arc<V>)>,
+        items: Vec<(K, Arc<V>)>,
+        nodes: Vec<Arc<Node<K, V>>>,
     },
     Remove {
         keys: Vec<K>,
-        nodes: Vec<(K, Arc<Node<K, V>>)>,
-        orphaned: Vec<(K, Arc<V>)>,
+        nodes: Vec<Arc<Node<K, V>>>,
     },
 }
 
 impl<K, V> NodeMod<K, V> {
     pub fn add(key: K, value: Arc<V>) -> Self {
         NodeMod::Add {
-            values: vec![(key, value)],
+            items: vec![(key, value)],
             nodes: Vec::new(),
-            orphaned: Vec::new(),
         }
     }
 
@@ -170,7 +167,6 @@ impl<K, V> NodeMod<K, V> {
         NodeMod::Remove {
             keys: vec![key],
             nodes: Vec::new(),
-            orphaned: Vec::new(),
         }
     }
 }

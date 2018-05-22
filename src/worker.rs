@@ -10,7 +10,7 @@ use itertools::Itertools;
 use time::PreciseTime;
 
 use errors::Result;
-use node::Node;
+use node::{Base, Leaf, Node};
 use task::{NodeMod, TaskBatch, TreeOp};
 
 const MASTER_WORKER_ID: usize = 0;
@@ -314,5 +314,114 @@ where
         }
 
         leaf_mods
+    }
+
+    fn modify_node(
+        &self,
+        node: Arc<Node<K, V>>,
+        mods: Vec<NodeMod<K, V>>,
+    ) -> (Arc<Node<K, V>>, Vec<NodeMod<K, V>>) {
+        if node.is_leaf() {
+            self.modify_node_leaf(node, mods)
+        } else {
+            self.modify_node_inner(node, mods)
+        }
+    }
+
+    fn modify_node_leaf(
+        &self,
+        node: Arc<Node<K, V>>,
+        mods: Vec<NodeMod<K, V>>,
+    ) -> (Arc<Node<K, V>>, Vec<NodeMod<K, V>>) {
+        let this = node.clone();
+        let leaf = node.as_leaf().unwrap();
+        let mut leaf_keys = leaf.keys.clone();
+        let mut leaf_values = leaf.values.clone();
+
+        for item in mods {
+            match item {
+                NodeMod::Add { items, .. } => for (key, value) in items {
+                    match leaf_keys.binary_search(&key) {
+                        Ok(idx) => {
+                            leaf_values[idx] = value;
+                        }
+                        Err(idx) => {
+                            leaf_keys.insert(idx, key);
+                            leaf_values.insert(idx, value);
+                        }
+                    }
+                },
+                NodeMod::Remove { keys, .. } => {
+                    for key in keys {
+                        if let Ok(idx) = leaf_keys.binary_search(&key) {
+                            leaf_keys.swap_remove(idx);
+                            leaf_values.swap_remove(idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        let parent = leaf.base.parent.clone();
+
+        if leaf_keys.len() > Leaf::<K, V>::max_slot() {
+            let item_per_node = Leaf::<K, V>::max_slot() / 2;
+
+            let nodes = leaf_keys
+                .into_iter()
+                .chunks(item_per_node)
+                .into_iter()
+                .zip(leaf_values.into_iter().chunks(item_per_node).into_iter())
+                .map(|(keys, values)| {
+                    Arc::new(Node::Leaf(Leaf {
+                        base: Base::new(parent.clone(), leaf.base.level),
+                        keys: keys.into_iter().collect(),
+                        values: values.into_iter().collect(),
+                    }))
+                })
+                .collect::<Vec<_>>();
+
+            trace!(
+                "split leaf node #{}: {:?}",
+                leaf.base.id,
+                nodes
+                    .iter()
+                    .map(|node| format!("Leaf#{}", node.id))
+                    .collect::<Vec<_>>()
+            );
+
+            (
+                parent.unwrap(),
+                vec![
+                    NodeMod::Add {
+                        items: Vec::new(),
+                        nodes,
+                    },
+                ],
+            )
+        } else if leaf_keys.len() < Leaf::<K, V>::max_slot() / 4 {
+            (
+                parent.unwrap(),
+                vec![
+                    NodeMod::Remove {
+                        keys: Vec::new(),
+                        nodes: vec![this],
+                    },
+                ],
+            )
+        } else {
+            (parent.unwrap(), vec![])
+        }
+    }
+
+    fn modify_node_inner(
+        &self,
+        node: Arc<Node<K, V>>,
+        mods: Vec<NodeMod<K, V>>,
+    ) -> (Arc<Node<K, V>>, Vec<NodeMod<K, V>>) {
+        let inner = node.as_inner().unwrap();
+        let parent = inner.base.parent.clone();
+
+        (parent.unwrap(), vec![])
     }
 }
