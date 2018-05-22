@@ -316,11 +316,7 @@ where
         leaf_mods
     }
 
-    fn modify_node(
-        &self,
-        node: Arc<Node<K, V>>,
-        mods: Vec<NodeMod<K, V>>,
-    ) -> (Arc<Node<K, V>>, Vec<NodeMod<K, V>>) {
+    fn modify_node(&self, node: Arc<Node<K, V>>, mods: Vec<NodeMod<K, V>>) -> Vec<NodeMod<K, V>> {
         if node.is_leaf() {
             self.modify_node_leaf(node, mods)
         } else {
@@ -332,7 +328,7 @@ where
         &self,
         node: Arc<Node<K, V>>,
         mods: Vec<NodeMod<K, V>>,
-    ) -> (Arc<Node<K, V>>, Vec<NodeMod<K, V>>) {
+    ) -> Vec<NodeMod<K, V>> {
         let this = node.clone();
         let leaf = node.as_leaf().unwrap();
         let mut leaf_keys = leaf.keys.clone();
@@ -362,8 +358,6 @@ where
             }
         }
 
-        let parent = leaf.base.parent.clone();
-
         if leaf_keys.len() > Leaf::<K, V>::max_slot() {
             let item_per_node = Leaf::<K, V>::max_slot() / 2;
 
@@ -374,7 +368,7 @@ where
                 .zip(leaf_values.into_iter().chunks(item_per_node).into_iter())
                 .map(|(keys, values)| {
                     Arc::new(Node::Leaf(Leaf {
-                        base: Base::new(parent.clone(), leaf.base.level),
+                        base: Base::new(leaf.base.parent.clone(), leaf.base.level),
                         keys: keys.into_iter().collect(),
                         values: values.into_iter().collect(),
                     }))
@@ -390,27 +384,21 @@ where
                     .collect::<Vec<_>>()
             );
 
-            (
-                parent.unwrap(),
-                vec![
-                    NodeMod::Add {
-                        items: Vec::new(),
-                        nodes,
-                    },
-                ],
-            )
+            vec![
+                NodeMod::Add {
+                    items: Vec::new(),
+                    nodes,
+                },
+            ]
         } else if leaf_keys.len() < Leaf::<K, V>::max_slot() / 4 {
-            (
-                parent.unwrap(),
-                vec![
-                    NodeMod::Remove {
-                        keys: Vec::new(),
-                        nodes: vec![this],
-                    },
-                ],
-            )
+            vec![
+                NodeMod::Remove {
+                    keys: Vec::new(),
+                    nodes: vec![this],
+                },
+            ]
         } else {
-            (parent.unwrap(), vec![])
+            vec![]
         }
     }
 
@@ -418,10 +406,10 @@ where
         &self,
         node: Arc<Node<K, V>>,
         mods: Vec<NodeMod<K, V>>,
-    ) -> (Arc<Node<K, V>>, Vec<NodeMod<K, V>>) {
+    ) -> Vec<NodeMod<K, V>> {
         let inner = node.as_inner().unwrap();
         let parent = inner.base.parent.clone();
 
-        (parent.unwrap(), vec![])
+        vec![]
     }
 }
