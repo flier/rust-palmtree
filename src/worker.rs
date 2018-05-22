@@ -132,17 +132,7 @@ where
             State::Search(tree_root, current_tasks) => {
                 debug!("worker-{} STAGE 1: search for leaves", self.id);
 
-                let searched_tasks = current_tasks.into_inner().into_iter().fold(
-                    HashMap::new(),
-                    |mut tasks, op| {
-                        let target_node = self.search(tree_root.clone(), op.key());
-
-                        tasks.entry(target_node).or_insert_with(Vec::new).push(op);
-
-                        tasks
-                    },
-                );
-
+                let searched_tasks = self.search_tasks(tree_root.clone(), current_tasks);
                 let current_tasks = self.redistribute_leaf_tasks(searched_tasks)?;
 
                 debug!(
@@ -153,17 +143,12 @@ where
 
                 State::Update(tree_root, current_tasks)
             }
-            State::Update(tree_root, mut current_tasks) => {
+            State::Update(tree_root, mut updates) => {
                 debug!("worker-{} STAGE 2: process leaves", self.id);
 
-                for (target_node, tree_ops) in self.receiver.try_iter() {
-                    current_tasks
-                        .entry(target_node)
-                        .or_insert_with(Vec::new)
-                        .extend(tree_ops.into_inner());
-                }
+                self.collect_updates(&mut updates);
 
-                let leaf_mods = self.resolve_hazards(current_tasks);
+                let leaf_mods = self.resolve_hazards(updates);
 
                 debug!(
                     "worker-{} STAGE 2: finished in {}",
@@ -215,6 +200,23 @@ where
         Ok((tree_root, current_tasks))
     }
 
+    fn search_tasks(
+        &self,
+        tree_root: Arc<Node<K, V>>,
+        task_batch: TaskBatch<K, V>,
+    ) -> HashMap<Arc<Node<K, V>>, Vec<TreeOp<K, V>>> {
+        task_batch
+            .into_inner()
+            .into_iter()
+            .fold(HashMap::new(), |mut tasks, op| {
+                let target_node = self.search(tree_root.clone(), op.key());
+
+                tasks.entry(target_node).or_insert_with(Vec::new).push(op);
+
+                tasks
+            })
+    }
+
     /// Return the leaf node that contains the key
     fn search(&self, tree_root: Arc<Node<K, V>>, key: &K) -> Arc<Node<K, V>> {
         let mut cur_node = tree_root;
@@ -250,6 +252,15 @@ where
         Ok(current_tasks)
     }
 
+    fn collect_updates(&self, updates: &mut HashMap<Arc<Node<K, V>>, Vec<TreeOp<K, V>>>) {
+        for (target_node, tree_ops) in self.receiver.try_iter() {
+            updates
+                .entry(target_node)
+                .or_insert_with(Vec::new)
+                .extend(tree_ops.into_inner());
+        }
+    }
+
     fn resolve_hazards(
         &self,
         current_tasks: HashMap<Arc<Node<K, V>>, Vec<TreeOp<K, V>>>,
@@ -258,39 +269,45 @@ where
         let mut deleted: HashSet<K> = HashSet::new();
         let mut leaf_mods = HashMap::new();
 
-        for (target_node, tree_ops) in current_tasks.into_iter() {
-            for op in tree_ops.into_iter() {
+        for (target_node, tree_ops) in current_tasks {
+            for op in tree_ops {
                 match op {
-                    TreeOp::Find { key, result, .. } => {
+                    TreeOp::Find {
+                        ref key,
+                        ref result,
+                        ..
+                    } => {
                         if deleted.contains(&key) {
                             continue;
                         }
 
-                        if let Some(value) = changed.get(&key) {
+                        if let Some(value) = changed.get(key) {
                             result.store(Arc::into_raw(value.clone()) as *mut V, Ordering::Relaxed)
                         } else if let Some(value) =
-                            target_node.as_leaf().and_then(|leaf| leaf.search(&key))
+                            target_node.as_leaf().and_then(|leaf| leaf.search(key))
                         {
                             result.store(Arc::into_raw(value.clone()) as *mut V, Ordering::Relaxed)
                         }
                     }
-                    TreeOp::Insert { key, value, .. } => {
-                        deleted.remove(&key);
+                    TreeOp::Insert {
+                        ref key, ref value, ..
+                    } => {
+                        deleted.remove(key);
                         changed.insert(key.clone(), value.clone());
 
                         leaf_mods
                             .entry(target_node.clone())
                             .or_insert_with(Vec::new)
-                            .push(NodeMod::add(key, value));
+                            .push(NodeMod::add(key.clone(), value.clone()));
                     }
-                    TreeOp::Remove { key, .. } => {
-                        changed.remove(&key);
+                    TreeOp::Remove { ref key, .. } => {
+                        changed.remove(key);
                         deleted.insert(key.clone());
 
                         leaf_mods
                             .entry(target_node.clone())
                             .or_insert_with(Vec::new)
-                            .push(NodeMod::remove(key));
+                            .push(NodeMod::remove(key.clone()));
                     }
                 }
             }

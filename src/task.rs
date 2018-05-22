@@ -1,4 +1,5 @@
 use std::ops::{Deref, DerefMut};
+use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -19,6 +20,18 @@ pub enum TreeOp<K, V> {
         key: K,
         result: AtomicPtr<V>,
     },
+}
+
+impl<K, V> Drop for TreeOp<K, V> {
+    fn drop(&mut self) {
+        match *self {
+            TreeOp::Find { ref result, .. }
+            | TreeOp::Insert { ref result, .. }
+            | TreeOp::Remove { ref result, .. } => {
+                drop(self.take_result());
+            }
+        }
+    }
 }
 
 impl<K, V> TreeOp<K, V> {
@@ -52,12 +65,12 @@ impl<K, V> TreeOp<K, V> {
         }
     }
 
-    pub fn result(&self) -> Option<Arc<V>> {
+    pub fn take_result(&self) -> Option<Arc<V>> {
         match *self {
             TreeOp::Find { ref result, .. }
             | TreeOp::Insert { ref result, .. }
             | TreeOp::Remove { ref result, .. } => {
-                let result = result.load(Ordering::Relaxed);
+                let result = result.swap(ptr::null_mut(), Ordering::Relaxed);
 
                 if result.is_null() {
                     None
